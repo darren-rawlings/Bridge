@@ -27,3 +27,6 @@ technique, Hard looks ahead over guessed deals (on a background thread). Max alw
 ## Scope for version 1
 Everything above. Later: rubber scoring, conventions (Stayman, transfers, Blackwood), claiming
 the rest of the tricks, a hand record to review deals.
+
+## Changes from Darren's notes (2026-10-22)
+- The table pauses while the tutorial is open, so the auction doesn't start underneath it. Every trick is logged.

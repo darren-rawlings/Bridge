@@ -72,7 +72,7 @@ public partial class Main : CardGame
 		for (int s = 0; s < 4; s++)
 		{
 			Fans[s].Pivot = Table.FanPivot[s];
-			Hands[s].Holder.Visible = true;
+			Hands[s].Holder!.Visible = true;
 		}
 		SetScore();
 		var order = Deck.Shuffled(Random);
@@ -165,7 +165,7 @@ public partial class Main : CardGame
 		var lookup = Fans[seat].Cards.ToDictionary(n => n.Card);
 		Fans[seat].Reorder(sorted.Select(c => lookup[c]));
 		Fans[seat].Settle(0.4f);
-		Hands[seat].Holder.Visible = false;
+		Hands[seat].Holder!.Visible = false;
 	}
 
 	private void Dim(int seat, IEnumerable<Card>? playable)
@@ -235,6 +235,7 @@ public partial class Main : CardGame
 			await Pause(0.6f);
 			int side = Auction.Side(won.Winner);
 			Hud.SetStatus(won.Winner == 0 ? "You take the trick." : $"{Names[won.Winner]} takes the trick.", side == 0 ? Bright : Muted);
+			TrickNews(won.Cards, won.Winner);
 			await SweepTrick(won.Winner, _trick.ToList(), _wonCount[won.Winner]++);
 			_trick.Clear();
 		}
