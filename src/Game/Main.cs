@@ -1,277 +1,303 @@
-using GameTemplate.Core;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using Bridge.Core;
 using Godot;
-using Renegade.Ads;
-using Renegade.Audio;
+using Renegade.Cards;
 using Renegade.Core;
-using Renegade.Dev;
-using Renegade.Looks;
 using Renegade.Play;
 using Renegade.Ui;
 
-namespace GameTemplate.Game;
+namespace Bridge.Game;
 
 /// <summary>
-/// Starting point for a new game, built the way every Renegade game is: the shared stage (lights,
-/// reflection sky, table), a board on a rig that spins with a drag, the shared HUD (modes,
-/// difficulty, Style menu, Undo (ad), Start over, Settings with sound and freeze, a video
-/// tutorial behind Demo), material sounds, ads every 5th game, the winner's fire and the flight
-/// recorder. The placeholder game: tap the board to knock it, five knocks finish a game.
-/// Replace the board, the rules (src/Core), the tap, the tutorial pages and the clips with the
-/// real game. Tutorial clips: give each a case in PlayClip, then run
-/// addons/renegade_core/tools/Record-Clips.ps1 with their names.
+/// Contract bridge, Chicago style: four deals, you (South) and Max (North) against Rosie (West)
+/// and Lena (East). Bid with the bidding box (your suggested call is shown). After the opening
+/// lead the dummy's hand turns face up; when your side declares you play both your hands. Tap a
+/// card to play it; cards you can't play are greyed.
 /// </summary>
-public partial class Main : Node3D
+public partial class Main : CardGame
 {
-	public const string Title = "Game Template";
+	private static readonly string[] SeatNames = { "South", "West", "North", "East" };
 
-	/// <summary>Google's test ad units until the real ones exist in AdMob (see the release playbook).</summary>
-	private static readonly AdMobConfig AdUnits = AdMobConfig.Test;
+	private readonly Dictionary<Card, Card3D> _nodes = new();
+	private Chicago _set = new();
+	private BridgeDeal? _deal;
+	private readonly BridgeAi[] _ais = new BridgeAi[4];
+	private readonly List<Card3D> _trick = new();
+	private readonly int[] _wonCount = new int[4];
+	private BiddingBox _box = null!;
 
-	private const float Thickness = 0.4f;
+	protected override string Title => "Bridge";
+	protected override string Hint => "Bid, then tap a card to play it";
+	protected override int MinPlayers => 4;
+	protected override int MaxPlayers => 4;
+	protected override bool SortYourHand => false;
+	protected override string NewGameText => _set.IsOver ? "New set" : "Next deal";
+	protected override IReadOnlyList<TutorialPage> TutorialPages => Tutorial.Pages;
+	protected override bool InProgress => !_set.IsOver && (_set.Played > 0 || _deal is { Phase: not DealPhase.Over });
 
-	private readonly ImpactBank<Style> _impacts = new(Styles.Impact);
-	private readonly Scoreboard _wins = new();
+	protected override void LevelChanged(Difficulty difficulty) => MakeAis(difficulty);
 
-	private GameSettings _settings = null!;
-	private Counter _game = new(5);
-	private Node3D _rig = null!;
-	private Camera3D _camera = null!;
-	private MeshInstance3D _board = null!;
-	private SoundPool _sound = null!;
-	private GameHud _hud = null!;
-	private IAdService _ads = null!;
-	private AdSchedule? _adSchedule;
-	private SpinControl _spin = null!;
-	private Flames? _fire;
-
-	private bool _demo;
-	private bool _quitAfterDemo;
-	private string? _clip;
-	private float _demoTimer;
-
-	public override void _Ready()
+	private void MakeAis(Difficulty difficulty)
 	{
-		DevLog.Tag = "gt";
-		AudioWatch.Attach(this, Title);
-		_settings = GameSettings.Load();
-		ReadDeveloperArgs();
-		AudioServer.SetBusMute(0, _settings.Muted);
+		for (int s = 0; s < 4; s++)
+			_ais[s] = new BridgeAi(s, s % 2 == 0 ? Difficulty.Hard : difficulty, new Random(Random.Next()));
+	}
 
-		_camera = new Camera3D { Position = new Vector3(0, 10f, 6.5f), Fov = 52, KeepAspect = Camera3D.KeepAspectEnum.Width };
-		AddChild(_camera);
-		_camera.LookAt(new Vector3(0, -0.4f, 0.3f));
-		Stage.Build(this, -Thickness, new Color("1a0f09"));
-		_rig = new Node3D();
-		AddChild(_rig);
-		_board = new MeshInstance3D
+	protected override void AddSettings()
+	{
+		_box = new BiddingBox(Hud.Theme) { Visible = false };
+		Widgets.Anchor(_box, Control.LayoutPreset.Center, left: -330, right: 330, top: -260, bottom: 40);
+		_box.Called += call =>
 		{
-			Mesh = new BoxMesh { Size = new Vector3(7, Thickness, 7) },
-			Position = new Vector3(0, -Thickness / 2, 0),
-			MaterialOverride = Materials.For(Styles.BoardLook(_settings.Board)),
+			if (!Busy && _deal is { Phase: DealPhase.Auction } deal && deal.Auction.Current == 0 && deal.Auction.IsLegal(call))
+				Run(MakeCall(0, call));
 		};
-		_rig.AddChild(_board);
-		Stage.WarmUp(this, -Thickness, Sparkle.Halo);
+		Hud.AddChild(_box);
+	}
 
-		_sound = new SoundPool();
-		AddChild(_sound);
-		_adSchedule ??= new AdSchedule(_settings.GamesSinceAd);
-		var theme = HudTheme.Warm;
-		_ads = AdServices.Create(this, AdUnits, _demo, new PlaceholderAds { TextColor = theme.Text });
+	protected override async Task NewRound()
+	{
+		int round = Round;
+		_box.Visible = false;
+		if (_set.IsOver)
+			_set = new Chicago();
+		MakeAis(Settings.Difficulty);
+		_nodes.Clear();
+		_trick.Clear();
+		Array.Clear(_wonCount);
+		_deal = null;
+		for (int s = 0; s < 4; s++)
+		{
+			Fans[s].Pivot = Table.FanPivot[s];
+			Hands[s].Holder.Visible = true;
+		}
+		SetScore();
+		var order = Deck.Shuffled(Random);
+		var nodes = await ShuffleOnTable(order);
+		if (round != Round)
+			return;
+		for (int i = 0; i < order.Count; i++)
+			_nodes[order[i]] = nodes[i];
+		var deal = new BridgeDeal(order, _set.NextDealer);
+		_deal = deal;
+		await DealRound(nodes, Enumerable.Range(0, 52).Select(i => (deal.Dealer + 1 + i) % 4).ToList(), spacing: 0.045f);
+		if (round != Round)
+			return;
+		await PickUpAll(s => deal.Hand(s).Select(c => _nodes[c]));
+		ArrangeBySuit();
+		Hud.SetRestartVisible(true);
+		await NextCall();
+	}
 
-		_hud = new GameHud(theme);
-		AddChild(_hud);
-		// The HUD saves Sound and Freeze the board itself; add a game's own Settings rows with
-		// _hud.AddToggle and _hud.AddChoice (keep their values in _settings.Extra).
-		_hud.Build(new HudOptions(Title, "Tap the board  ·  Drag sideways to spin"), _settings);
-		_hud.NewGamePressed += OnNewGamePressed;
-		_hud.RestartPressed += OnRestartPressed;
-		_hud.SetTutorial(Tutorial.Pages);
-		_hud.ModeChosen += (mode, difficulty) =>
-		{
-			_settings.Mode = mode;
-			_settings.Difficulty = difficulty;
-			_settings.Save();
-		};
-		_hud.BoardChosen += style =>
-		{
-			_settings.Board = style;
-			_settings.Save();
-			_board.MaterialOverride = Materials.For(Styles.BoardLook(style));
-		};
-		_hud.PiecesChosen += style =>
-		{
-			_settings.Pieces = style;
-			_settings.Save();
-		};
+	private string History()
+	{
+		var auction = _deal!.Auction;
+		var recent = auction.Calls.Select((c, i) => $"{SeatNames[auction.SeatOf(i)][0]}: {c}").TakeLast(6);
+		return auction.Calls.Count == 0 ? $"{SeatNames[auction.Dealer]} deals." : string.Join("  ", recent);
+	}
 
-		_spin = new SpinControl(_rig, () => !_settings.FreezeBoard);
-		// Freeze the board also turns it back to where it started.
-		_spin.Frozen = () => _settings.FreezeBoard;
-		_spin.Tapped += OnTapped;
-		RefreshUi();
-		if (_clip != null)
+	private async Task NextCall()
+	{
+		var deal = _deal!;
+		int round = Round;
+		SetScore();
+		if (deal.Phase == DealPhase.Over)
 		{
-			_hud.Visible = false;
-			_ = PlayClip(_clip);
+			await EndDeal();
 			return;
 		}
-		if (!_demo)
-			_hud.OfferTutorialOnce(_settings);
-		_hud.ApplyDevFlags();
-	}
-
-	public override void _UnhandledInput(InputEvent @event)
-	{
-		if (!_hud.MenuOpen)
-			_spin.HandleInput(@event);
-	}
-
-	/// <summary>A tap on the board: a knock in the board's material, sparks on the last one.</summary>
-	private void OnTapped(Vector2 screen)
-	{
-		if (_game.IsDone)
-			return;
-		var from = _camera.ProjectRayOrigin(screen);
-		var direction = _camera.ProjectRayNormal(screen);
-		if (direction.Y > -0.01f)
-			return;
-		var hit = from + direction * (-from.Y / direction.Y);
-		var local = _rig.ToLocal(hit);
-		if (Mathf.Abs(local.X) > 3.5f || Mathf.Abs(local.Z) > 3.5f)
-			return;
-		_hud.HideHint();
-		_game.Tap();
-		_sound.PlayImpact(_impacts.Random(_settings.Board), hit, 1f, Styles.GainDb(_settings.Board));
-		if (_game.IsDone)
+		if (deal.Phase == DealPhase.Play)
 		{
-			_wins.Win(first: true);
-			Sparkle.Burst(_rig, local + new Vector3(0, 0.3f, 0));
-			// The winner's fire: in a real game, set the winning pieces alight.
-			_fire = Flames.SetAlight(_rig, local, new[] { _board }, radius: 0.6f, size: 1.4f, withLight: true);
+			SayNone();
+			var c = deal.Contract!;
+			Hud.SetStatus($"The contract: {c} by {Who(c.Declarer)}. {Who((c.Declarer + 1) % 4)} leads.", Bright);
+			await Pause(1.2f);
+			await NextTurn();
+			return;
 		}
-		RefreshUi();
+		int seat = deal.Auction.Current;
+		if (seat == 0 && !Demo)
+		{
+			_box.Open(deal.Auction, BridgeAi.Suggest(deal, 0), History());
+			Busy = false;
+			Hud.SetStatus($"Your call. You have {BridgeAi.Hcp(deal.Hand(0))} points.", Bright);
+			return;
+		}
+		Busy = true;
+		await Pause(0.75f);
+		if (round != Round)
+			return;
+		await MakeCall(seat, _ais[seat].ChooseCall(deal));
 	}
 
-	private void OnNewGamePressed()
+	private async Task MakeCall(int seat, Bridge.Core.Call call)
 	{
-		bool adDue = _adSchedule!.GameFinished();
-		_settings.GamesSinceAd = _adSchedule.GamesSinceAd;
-		_settings.Save();
-		if (adDue)
+		var deal = _deal!;
+		Busy = true;
+		_box.Visible = false;
+		deal.MakeCall(call);
+		Say(seat, call.ToString());
+		Hud.SetStatus(History(), Muted);
+		await Pause(0.5f);
+		await NextCall();
+	}
+
+	/// <summary>Whether you choose the card for a seat: your own (unless you're dummy), and your partner's when your side declares.</summary>
+	private bool YouPlay(int seat)
+	{
+		if (Demo || _deal?.Contract is not { } c)
+			return false;
+		bool ourSide = Auction.Side(c.Declarer) == 0;
+		return ourSide ? seat is 0 or 2 : seat == 0;
+	}
+
+	/// <summary>Turns a hand to face you, laid out by suit (the dummy, or your partner's hand when you declare).</summary>
+	private void FaceUp(int seat)
+	{
+		var pivot = Table.FanPivot[seat];
+		var eye = Table.Camera.GlobalPosition;
+		var at = seat == 2 ? pivot.Origin + new Vector3(0, -0.15f, 0.5f) : pivot.Origin + new Vector3(seat == 1 ? 0.35f : -0.35f, 0.1f, 0.35f);
+		Fans[seat].Pivot = new Transform3D(Basis.LookingAt(at - eye, Vector3.Up), at);
+		var sorted = Tricks.Sorted(Fans[seat].Cards.Select(n => n.Card));
+		var lookup = Fans[seat].Cards.ToDictionary(n => n.Card);
+		Fans[seat].Reorder(sorted.Select(c => lookup[c]));
+		Fans[seat].Settle(0.4f);
+		Hands[seat].Holder.Visible = false;
+	}
+
+	private void Dim(int seat, IEnumerable<Card>? playable)
+	{
+		var allowed = playable?.ToHashSet();
+		foreach (int s in new[] { 0, 2 })
+			foreach (var node in Fans[s].Cards)
+				node.Dimmed = allowed != null && s == seat && !allowed.Contains(node.Card);
+	}
+
+	private async Task NextTurn()
+	{
+		var deal = _deal!;
+		int round = Round;
+		SetScore();
+		if (deal.Phase == DealPhase.Over)
 		{
-			DevLog.Write("ad: between-games interstitial");
-			_ads.ShowInterstitial(StartGame);
+			await EndDeal();
+			return;
+		}
+		int seat = deal.Current;
+		if (YouPlay(seat))
+		{
+			Dim(seat, deal.Legal());
+			Busy = false;
+			string whose = seat == 0 ? "your hand" : "Max's hand (the dummy)";
+			if (deal.Contract!.Declarer == 2 && seat == 2)
+				whose = "Max's hand (you're playing it)";
+			Hud.SetStatus(deal.Trick.Count == 0 ? $"Lead from {whose}." : $"Play from {whose}.", Bright);
+			return;
+		}
+		Busy = true;
+		var copy = deal.Clone();
+		var ai = _ais[seat == deal.Contract!.Dummy ? deal.Contract.Declarer : seat];
+		var think = Task.Run(() => ai.ChoosePlay(copy));
+		await Pause(0.45f);
+		var card = await think;
+		if (round != Round)
+			return;
+		await Play(seat, card);
+	}
+
+	private async Task Play(int seat, Card card)
+	{
+		var deal = _deal!;
+		Busy = true;
+		Dim(seat, null);
+		bool firstLead = deal.TricksPlayed == 0 && deal.Trick.Count == 0;
+		var won = deal.PlayCard(card);
+		var node = _nodes[card];
+		_trick.Add(node);
+		await PlayToTrick(seat, node);
+		if (seat == 0)
+			ArrangeBySuit();
+		if (firstLead)
+		{
+			// The dummy goes down; when our side declares, we see both our hands.
+			var c = deal.Contract!;
+			FaceUp(c.Dummy);
+			if (Auction.Side(c.Declarer) == 0 && c.Declarer == 2)
+				FaceUp(2);
+			Hud.SetStatus($"{Who(c.Dummy)} {(c.Dummy == 0 ? "are" : "is")} the dummy.", Muted);
+			await Pause(0.6f);
+		}
+		if (won != null)
+		{
+			await Pause(0.6f);
+			int side = Auction.Side(won.Winner);
+			Hud.SetStatus(won.Winner == 0 ? "You take the trick." : $"{Names[won.Winner]} takes the trick.", side == 0 ? Bright : Muted);
+			await SweepTrick(won.Winner, _trick.ToList(), _wonCount[won.Winner]++);
+			_trick.Clear();
+		}
+		await NextTurn();
+	}
+
+	private async Task EndDeal()
+	{
+		var deal = _deal!;
+		Busy = true;
+		_box.Visible = false;
+		SayNone();
+		int score = _set.Record(deal);
+		SetScore();
+		string message;
+		if (deal.Contract is not { } c)
+		{
+			message = "Everyone passed: the deal is passed out.";
 		}
 		else
 		{
-			StartGame();
+			int made = deal.DeclarerTricks - c.Needed;
+			string by = c.Declarer == 0 ? "You" : Names[c.Declarer];
+			message = made >= 0
+				? $"{by} made {c}{(made > 0 ? $" with {made} over" : "")}: {score} to {(Auction.Side(c.Declarer) == 0 ? "us" : "them")}."
+				: $"{by} went {-made} down in {c}: {-score} to {(Auction.Side(c.Declarer) == 0 ? "them" : "us")}.";
+			if (Auction.Side(c.Declarer) == 0 && made >= 0)
+				Sparkle.Burst(this, Table.Winnings[c.Declarer] + Vector3.Up * 0.3f);
 		}
-	}
-
-	private void StartGame()
-	{
-		_fire?.Extinguish();
-		_fire = null;
-		_board.MaterialOverlay = null;
-		_game = new Counter(5);
-		RefreshUi();
-	}
-
-	/// <summary>
-	/// Start over mid-game. Against the computer it counts as resigning (a loss) unless the player
-	/// watches an ad; between two players it just asks first.
-	/// </summary>
-	private void OnRestartPressed()
-	{
-		if (_game.IsDone || _game.Count == 0)
+		await Pause(0.3f);
+		if (_set.IsOver)
 		{
-			StartGame();
-			return;
+			int w = _set.Winner;
+			string result = w == 0 ? $"You and Max win the set, {_set.Scores[0]} to {_set.Scores[1]}!" : w == 1 ? $"Rosie and Lena win the set, {_set.Scores[1]} to {_set.Scores[0]}." : "The set is tied!";
+			Finish($"{message} {result}", w == 0 ? 0 : w == 1 ? 1 : -1);
 		}
-		_hud.AskRestart(_settings.Mode == GameMode.PlayerVsComputer && !_demo, countLoss =>
-		{
-			if (countLoss)
-				_wins.Win(first: false);
-			StartGame();
-		}, then => _ads.ShowRewarded(rewarded: then, closed: () => { }));
-	}
-
-	/// <summary>
-	/// Plays one scripted scene for the tutorial (with --clip=name), then quits; the HUD is hidden
-	/// so the clip shows only the board. Record them with addons/renegade_core/tools/Record-Clips.ps1.
-	/// </summary>
-	private async System.Threading.Tasks.Task PlayClip(string clip)
-	{
-		_settings.Muted = false;
-		await ToSignal(GetTree().CreateTimer(0.8), SceneTreeTimer.SignalName.Timeout);
-		switch (clip)
-		{
-			default:
-				for (int i = 0; i < 5; i++)
-				{
-					OnTapped(GetViewport().GetVisibleRect().Size / 2);
-					await ToSignal(GetTree().CreateTimer(0.6), SceneTreeTimer.SignalName.Timeout);
-				}
-				break;
-		}
-		await ToSignal(GetTree().CreateTimer(2.0), SceneTreeTimer.SignalName.Timeout);
-		GetTree().Quit();
-	}
-
-	private void RefreshUi()
-	{
-		_hud.SetScore($"Games {_wins.First}");
-		_hud.SetNewGameVisible(_game.IsDone);
-		_hud.SetRestartVisible(!_game.IsDone);
-		_hud.SetStatus(_game.IsDone ? "Done!" : $"Knock {_game.Count} of {_game.Target}", new Color("fff3e0"));
-		if (_game.IsDone && _demo && _quitAfterDemo && _wins.First >= 5)
-			GetTree().Quit();
-	}
-
-	public override void _Process(double delta)
-	{
-		float dt = (float)delta;
-		_spin.Process(dt);
-		if (!_demo)
-			return;
-		_demoTimer += dt;
-		if (_demoTimer < 0.3f)
-			return;
-		_demoTimer = 0f;
-		if (_game.IsDone)
-			OnNewGamePressed();
 		else
-			OnTapped(GetViewport().GetVisibleRect().Size / 2);
+		{
+			Finish(message, -1);
+		}
 	}
 
-	/// <summary>
-	/// Developer flags after `--` (or in user://dev_args.txt on a phone): `--log`, `--demo`,
-	/// `--quit-after-demo`, `--games-since-ad=4`, `--clip=knock` (plays a tutorial clip and quits),
-	/// plus the HUD's `--tutorial=N` and `--settings`. Add the game's own flags here.
-	/// </summary>
-	private void ReadDeveloperArgs()
+	private void SetScore()
 	{
-		foreach (var (name, value) in DevArgs.Read())
+		string contract = _deal?.Contract is { } c ? $" · {c.Level}{Bridge.Core.Call.Symbol(c.Strain)}{(c.Doubling > 0 ? "x" : "")} by {SeatNames[c.Declarer]}: {_deal.DeclarerTricks}/{c.Needed}" : "";
+		bool usVul = Scoring.Vulnerable(_set.Played, 0), themVul = Scoring.Vulnerable(_set.Played, 1);
+		string vul = usVul && themVul ? "both vul" : usVul ? "us vul" : themVul ? "them vul" : "none vul";
+		Hud.SetScore($"Deal {Math.Min(_set.Played + 1, 4)}/4 ({vul}) · Us {_set.Scores[0]} · Them {_set.Scores[1]}{contract}");
+	}
+
+	protected override void Tapped(Vector3 origin, Vector3 direction, Vector2 screen)
+	{
+		if (_deal is not { Phase: DealPhase.Play } deal || !YouPlay(deal.Current))
+			return;
+		int seat = deal.Current;
+		if (Fans[seat].At(origin, direction) is not { } card)
+			return;
+		if (!deal.Legal().Contains(card.Card))
 		{
-			switch (name)
-			{
-				case "--log":
-					DevLog.Enabled = true;
-					break;
-				case "--demo":
-					_demo = true;
-					_settings.Muted = false;
-					break;
-				case "--quit-after-demo":
-					_quitAfterDemo = true;
-					break;
-				case "--games-since-ad":
-					_adSchedule = new AdSchedule(int.Parse(value));
-					break;
-				case "--clip":
-					_clip = value;
-					break;
-			}
+			Hud.SetStatus("You must follow suit.", Bright);
+			return;
 		}
+		Hud.HideHint();
+		Run(Play(seat, card.Card));
 	}
 }

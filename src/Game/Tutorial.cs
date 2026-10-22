@@ -1,21 +1,20 @@
 using System.Collections.Generic;
 using Renegade.Ui;
 
-namespace GameTemplate.Game;
+namespace Bridge.Game;
 
-/// <summary>
-/// The guided tour behind the Demo button: a few short pages, each with a looping clip recorded
-/// from the game itself (see Main.PlayClip and addons/renegade_core/tools/Record-Clips.ps1).
-/// Text only, no voice. A page without a clip (Video = null) just shows its text.
-/// </summary>
+/// <summary>The guided tour behind the Demo button: a few short pages.</summary>
 public static class Tutorial
 {
 	public static readonly IReadOnlyList<TutorialPage> Pages = new[]
 	{
-		new TutorialPage("Knock five times",
-			"Tap the board to knock on it. Five knocks finish a game, and the board catches fire. Replace this page with the real game's rules.",
-			"res://tutorial/knock.ogv"),
-		new TutorialPage("Tips",
-			"Drag sideways to spin the board, or freeze it in Settings."),
+		new TutorialPage("Partners and tricks",
+			"You (South) play with Max (North) against Rosie and Lena. Each deal, the side that wins the auction tries to take the number of tricks it bid: six, plus the level of the bid."),
+		new TutorialPage("The auction",
+			"Each player in turn bids a level (1 to 7) and a suit or no trumps, higher than the last bid, or passes. Use the bidding box; the suggested call follows a simple standard system. Count your points: ace 4, king 3, queen 2, jack 1."),
+		new TutorialPage("The play",
+			"The player left of the declarer leads, then the declarer's partner lays their hand face up: the dummy. The declarer plays both hands. Follow suit if you can; trumps beat everything else. When your side declares, you play both your hands."),
+		new TutorialPage("Chicago scoring",
+			"A set is four deals. Make your contract to score; game contracts (3NT, 4♥, 4♠, 5♣, 5♦) earn a big bonus, slams more. Go down and the other side scores. Being vulnerable raises the stakes."),
 	};
 }
