@@ -119,6 +119,7 @@ public partial class Main : CardGame
 			return;
 		}
 		int seat = deal.Auction.Current;
+		ShowTurn(seat);
 		if (seat == 0 && !Demo)
 		{
 			_box.Open(deal.Auction, BridgeAi.Suggest(deal, 0), History());
@@ -187,6 +188,8 @@ public partial class Main : CardGame
 			return;
 		}
 		int seat = deal.Current;
+		// The dummy's cards are played by the declarer: their hands show whose turn it is.
+		ShowTurn(deal.Contract is { } contract && seat == contract.Dummy ? contract.Declarer : seat);
 		if (YouPlay(seat))
 		{
 			Dim(seat, deal.Legal());
@@ -234,7 +237,6 @@ public partial class Main : CardGame
 		{
 			await Pause(0.6f);
 			int side = Auction.Side(won.Winner);
-			Hud.SetStatus(won.Winner == 0 ? "You take the trick." : $"{Names[won.Winner]} takes the trick.", side == 0 ? Bright : Muted);
 			TrickNews(won.Cards, won.Winner);
 			await SweepTrick(won.Winner, _trick.ToList(), _wonCount[won.Winner]++);
 			_trick.Clear();
