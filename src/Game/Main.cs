@@ -60,6 +60,7 @@ public partial class Main : CardGame
 
 	protected override async Task NewRound()
 	{
+		ClipMoment("deal", 10);
 		int round = Round;
 		_box.Visible = false;
 		if (_set.IsOver)
@@ -108,6 +109,7 @@ public partial class Main : CardGame
 
 	private async Task NextCall()
 	{
+		ClipMoment("auction", 8, log: true);
 		var deal = _deal!;
 		int round = Round;
 		SetScore();
@@ -165,6 +167,7 @@ public partial class Main : CardGame
 	/// <summary>Turns a hand to face you, laid out by suit (the dummy, or your partner's hand when you declare).</summary>
 	private void FaceUp(int seat)
 	{
+		ClipMoment("dummy", 6);
 		var pivot = Table.FanPivot[seat];
 		var eye = Table.Camera.GlobalPosition;
 		// Your partner's hand, when you're to play it, comes well over towards you and spreads wide, so
@@ -228,6 +231,7 @@ public partial class Main : CardGame
 
 	private async Task Play(int seat, Card card)
 	{
+		ClipMoment("trick", 8);
 		var deal = _deal!;
 		Busy = true;
 		Dim(seat, null);
@@ -261,6 +265,7 @@ public partial class Main : CardGame
 
 	private async Task EndDeal()
 	{
+		ClipMoment("result", 6);
 		var deal = _deal!;
 		Busy = true;
 		_box.Visible = false;
