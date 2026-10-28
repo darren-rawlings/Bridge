@@ -73,6 +73,13 @@ public partial class Main : CardGame
 		{
 			Fans[s].Pivot = Table.FanPivot[s];
 			Hands[s].Holder!.Visible = true;
+			if (s > 0)
+			{
+				// Back to the size every other player's fan is (the kit's), after a partner's hand was spread for you.
+				Fans[s].Radius = 0.5f;
+				Fans[s].Spread = 9f;
+				Fans[s].MaxArc = 80f;
+			}
 		}
 		SetScore();
 		var order = Deck.Shuffled(Random);
@@ -160,8 +167,16 @@ public partial class Main : CardGame
 	{
 		var pivot = Table.FanPivot[seat];
 		var eye = Table.Camera.GlobalPosition;
-		var at = seat == 2 ? pivot.Origin + new Vector3(0, -0.15f, 0.5f) : pivot.Origin + new Vector3(seat == 1 ? 0.35f : -0.35f, 0.1f, 0.35f);
+		// Your partner's hand, when you're to play it, comes well over towards you and spreads wide, so
+		// every card is easy to pick; the other side's dummy is just turned to face you.
+		var at = seat == 2 ? pivot.Origin.Lerp(eye, 0.32f) + Vector3.Down * 0.35f : pivot.Origin + new Vector3(seat == 1 ? 0.35f : -0.35f, 0.1f, 0.35f);
 		Fans[seat].Pivot = new Transform3D(Basis.LookingAt(at - eye, Vector3.Up), at);
+		if (seat == 2)
+		{
+			Fans[seat].Radius = 0.62f;
+			Fans[seat].Spread = 12f;
+			Fans[seat].MaxArc = 110f;
+		}
 		var sorted = Tricks.Sorted(Fans[seat].Cards.Select(n => n.Card));
 		var lookup = Fans[seat].Cards.ToDictionary(n => n.Card);
 		Fans[seat].Reorder(sorted.Select(c => lookup[c]));
@@ -272,7 +287,7 @@ public partial class Main : CardGame
 		{
 			int w = _set.Winner;
 			string result = w == 0 ? $"You and Max win the set, {_set.Scores[0]} to {_set.Scores[1]}!" : w == 1 ? $"Rosie and Lena win the set, {_set.Scores[1]} to {_set.Scores[0]}." : "The set is tied!";
-			Finish($"{message} {result}", w == 0 ? 0 : w == 1 ? 1 : -1);
+			Finish($"{message} {result}", w == 0 ? 0 : w == 1 ? 1 : -1, winningSeats: w == 0 ? new[] { 0, 2 } : new[] { 1, 3 });
 		}
 		else
 		{
